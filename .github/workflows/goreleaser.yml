@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: read # to fetch code (actions/checkout)
+  packages: write # to publish docker images (goreleaser/goreleaser-action)
+  repository-projects: write # to create GitHub release (goreleaser/goreleaser-action)
 
 jobs:
   goreleaser:
@@ -67,21 +69,29 @@ jobs:
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.5.0
     with:
       base64-subjects: "${{ needs.goreleaser.outputs.hashes }}"
-      upload-assets: true # upload to a new release
+      upload-assets: false # upload to a new release
   verification:
     needs: [goreleaser, provenance]
     runs-on: ubuntu-latest
-    permissions: read-all
     steps:
       - name: Install SLSA verifier
         uses: slsa-framework/slsa-verifier/actions/installer@v2.1.0
       - name: Download assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROVENANCE: "${{ needs.provenance.outputs.provenance-name }}"
         run: |
           set -euo pipefail
-          gh -R "$GITHUB_REPOSITORY" release download "$GITHUB_REF_NAME" -p "osv-scanner_*"
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "Downloading assets for tag $TAG"
+          gh api "repos/$GITHUB_REPOSITORY/releases"
+          curl -H 'Authorization: token $GITHUB_TOKEN' https://api.github.com/repos/developer-guy/osv-scanner/releases
+          gh api "repos/$GITHUB_REPOSITORY/releases" | jq -r '.[] | select(.tag_name=="$TAG" and .draft == true).assets[].id'
+          for i in $(gh api "repos/$GITHUB_REPOSITORY/releases" | jq -r '.[] | select(.tag_name=="$TAG").assets[].id');do
+            echo "Downloading asset $i"
+            curl -L -o $(gh api "repos/$GITHUB_REPOSITORY/releases/assets/$i" | jq -r '.name') -H "Authorization: token $GH_TOKEN" -H "Accept: application/octet-stream" $(gh api "repos/$GITHUB_REPOSITORY/releases/assets/$i" | jq -r '.browser_download_url')
+          done
+          ls -latr
           gh -R "$GITHUB_REPOSITORY" release download "$GITHUB_REF_NAME" -p "$PROVENANCE"
       - name: Verify assets
         env:
